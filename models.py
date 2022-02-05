@@ -9,18 +9,9 @@ class WrapperI3D(nn.Module):
         self.i3d = InceptionI3d()
         self.i3d.load_state_dict(torch.load(I3D_PRETRAINED_PATH))
 
-    def forward(self, batches: torch.tensor):
-        # B x Cls x F x C x H x W
-        B = batches.size(0)
-        Cls = batches.size(1)
-        batches = batches.reshape(-1, *batches.size()[2:])
-        ret = self._forward(batches)
-        ret = ret.reshape(B, Cls, *ret.size()[1:])
-        return ret
-    
-    def _forward(self, videos):
-        videos = videos.transpose_(1, 2)
-        return self.i3d(videos).squeeze(2)
+    def forward(self, video):
+        video = video.transpose_(1, 2)
+        return self.i3d(video).squeeze(2).unsqueeze(1)
 
 class WrapperResNet(nn.Module):
     def __init__(self):
