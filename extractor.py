@@ -1,6 +1,5 @@
 import torch
 from tqdm import tqdm
-from dataset import DataSet
 import argparse
 from models import WrapperI3D
 import pandas as pd
