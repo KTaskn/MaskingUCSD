@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 import argparse
-from models import WrapperI3D
+from models import WrapperI3D, WrapperResNet
 import pandas as pd
 from milforvideo.video import Extractor, VideoFeature
 from torchvision import transforms
@@ -31,7 +31,7 @@ def open_mask(path: str, resize: float = 1.0) -> Image.Image:
     else:
         return np.zeros(open_image(path, resize).shape, dtype=np.uint8)
 
-def img2tensor(paths, background, reverse_mask):
+def img2tensor_forvideo(paths, background, reverse_mask):
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -49,20 +49,37 @@ def img2tensor(paths, background, reverse_mask):
         for path in paths
     ])
 
+def img2tensor(path, background, reverse_mask):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    # マスクを反転適用
+    filter_value = 0 if reverse_mask else 255
+    
+    return transform(Image.fromarray(np.where(
+            open_mask(path) == filter_value, 
+            open_image(path), 
+            background)))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("pathlist", help="Path to the dataset", type=str)
     parser.add_argument("output_path", help="Path to the output file", type=str)
+    parser.add_argument("--video", action='store_true', help="Analyze Video")
     parser.add_argument("--gpu", action='store_true', help="Use GPU")
     
     args = parser.parse_args()
     print(f"pathlist: {args.pathlist}")
     print(f"output_path: {args.output_path}")
+    print(f"video: {args.video}")
     print(f"gpu: {args.gpu}")
     
     # You can change the model here
-    net = WrapperI3D()
+    net = WrapperI3D() if args.video else WrapperResNet()
     
     # Get the image path and label from a input file
     with open(args.pathlist) as f:
@@ -76,28 +93,37 @@ if __name__ == "__main__":
             "path": [path for _, path, _ in grp_path_and_label],
             "label": [int(label) for _, _, label in grp_path_and_label],
         })
-    
+        
     outputs = []
-    for idx, df_grp in tqdm(df.groupby('grp')):
+    for idx, df_grp in tqdm(df.groupby('grp')):          
         background = np.median([
             open_image(path)
             for path in df_grp["path"].tolist()
         ], axis=0).astype(np.uint8)
+        
+        
+        if args.video:
+            parser = lambda paths: img2tensor_forvideo(paths, background, reverse_mask=False)
+            parser_reverse = lambda paths: img2tensor_forvideo(paths, background, reverse_mask=True)
+        else:
+            parser = lambda paths: img2tensor(paths, background, reverse_mask=False)
+            parser_reverse = lambda paths: img2tensor(paths, background, reverse_mask=True)
+        
         extractor_mask = Extractor(
             df_grp["path"].tolist(), 
             df_grp["label"].tolist(), 
-            net, lambda paths: img2tensor(paths, background, reverse_mask=False),
-            F=16,
-            aggregate=max,
+            net, parser,
+            F=16 if args.video else None,
+            aggregate=max if args.video else None,
             cuda=args.gpu)
         features_mask = extractor_mask.extract()
         
         extractor_reverse = Extractor(
             df_grp["path"].tolist(), 
             df_grp["label"].tolist(), 
-            net, lambda paths: img2tensor(paths, background, reverse_mask=True),
-            F=16,
-            aggregate=lambda x: 0,
+            net, parser_reverse,
+            F=16 if args.video else None,
+            aggregate=max if args.video else None,
             cuda=args.gpu)
         features_reverse = extractor_reverse.extract()
         

@@ -18,15 +18,5 @@ class WrapperResNet(nn.Module):
         super().__init__()
         self.resnet = torch.hub.load('pytorch/vision:v0.10.0', 'resnet152', pretrained=True)
 
-    def forward(self, batches: torch.tensor):
-        # B x Cls x 1 x C x H x W
-        B = batches.size(0)
-        Cls = batches.size(1)
-        batches = batches.reshape(-1, *batches.size()[2:])
-        ret = self._forward(batches)
-        ret = ret.reshape(B, Cls, *ret.size()[1:])
-        return ret
-        
-    def _forward(self, images):
-        images = images.squeeze(1)
-        return self.resnet(images)
+    def forward(self, images):
+        return self.resnet(images).unsqueeze(1)
