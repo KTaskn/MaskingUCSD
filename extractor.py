@@ -37,18 +37,18 @@ def img2tensor_forvideo(paths, background):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
-    
+        
     return torch.stack([
         torch.stack([
             transform(Image.fromarray(np.where(
                 open_mask(path) == 0, 
                 open_image(path), 
-                background))),            
+                background))) for path in paths]),
+        torch.stack([
             transform(Image.fromarray(np.where(
-                open_mask(path) == 255, 
+                open_mask(path) == 255,
                 open_image(path), 
-                background)))])
-        for path in paths
+                background))) for path in paths])
     ])
 
 def img2tensor(path, background):
@@ -69,6 +69,29 @@ def img2tensor(path, background):
             background)))
         ])
 
+def aggregate_image(label):
+    # if 1 in labels:
+    masks = label
+    
+    if label == 0:
+        # もし normal なら反転マスクを無視したいので -1
+        reverses = -1
+    else:
+        # もし anomaly なら反転マスクを考慮したいので 0
+        reverses = 0
+    return [masks, reverses]
+
+def aggregate_video(labels):
+    # maskしたばあい、または、通常の場合
+    masks = max(labels)
+    
+    if max(labels) == 0:
+        # もし anomaly の frame がなければ、無視したいので -1 にする
+        reverses = -1
+    else:
+        # もし anomaly の frame があれば、anomalyの逆で考慮したいので 0 にする
+        reverses = 0
+    return [masks, reverses]
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -117,7 +140,7 @@ if __name__ == "__main__":
             df_grp["label"].tolist(), 
             net, parser,
             F=16 if args.video else None,
-            aggregate=max if args.video else None,
+            aggregate=aggregate_video if args.video else aggregate_image,
             cuda=args.gpu)
         features = extractor.extract()
                 
