@@ -147,4 +147,5 @@ if __name__ == "__main__":
         outputs.append(features)
         
     print("faetures_size: ", outputs[0].features.size())
+    print("labels_size: ", outputs[0].labels.size())
     torch.save(outputs, args.output_path)
