@@ -1,57 +1,110 @@
 import torch
 from tqdm import tqdm
-from dataset import DataSet
 import argparse
 from models import WrapperI3D, WrapperResNet
 import pandas as pd
+from milforvideo.video import Extractor, VideoFeature
+from torchvision import transforms
+from PIL import Image
+import os
+import cv2
+import numpy as np
 
 N_BATCHES = 5
 N_WORKERS = 18
 
-# Number of frames per feature
-F = 16
 
-def extract(dataset, net, n_batches=N_BATCHES, n_workers=N_WORKERS, cuda=False):
-    net = net.cuda() if cuda else net
-    net.eval()
-    loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=n_batches,
-        shuffle=False,
-        num_workers=n_workers)
+def open_image(path: str, resize: float = 1.0) -> Image.Image:
+    assert os.path.exists(path)
+    img = cv2.imread(path)
+    return cv2.resize(img, dsize=None, fx=resize, fy=resize)
+        
+
+def get_mask_path(path):
+    TXT = "Test000/000.tif"
+    return path[:-len(TXT)] + path[-len(TXT):-len("Test000") - 1] + "_gt/" + os.path.basename(path).replace(".tif", ".bmp")
+
+def open_mask(path: str, resize: float = 1.0) -> Image.Image:
+    mask_path = get_mask_path(path)
+    if os.path.exists(mask_path):
+        return open_image(mask_path, resize)
+    else:
+        return np.zeros(open_image(path, resize).shape, dtype=np.uint8)
+
+def img2tensor_forvideo(paths, background):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+        
+    return torch.stack([
+        torch.stack([
+            transform(Image.fromarray(np.where(
+                open_mask(path) == 0, 
+                open_image(path), 
+                background))) for path in paths]),
+        torch.stack([
+            transform(Image.fromarray(np.where(
+                open_mask(path) == 255,
+                open_image(path), 
+                background))) for path in paths])
+    ])
+
+def img2tensor(path, background):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
     
-    outputs, outputs_label = [], []
-    with torch.no_grad():
-        with tqdm(total=len(loader), unit="batch") as pbar:
-            for batches, b_labels in loader:
-                # B x Cls x F x C x H x W if video
-                # B x Cls x 1 x C x H x W if image
-                batches = batches.cuda() if cuda else batches
-                predicts = net(batches)
-                predicts = predicts.cpu() if cuda else predicts
-                outputs.append(predicts)
-                outputs_label.append(b_labels)
-                pbar.update(1)
-    return torch.cat(outputs), torch.cat(outputs_label)
+    return torch.stack([
+        transform(Image.fromarray(np.where(
+            open_mask(path) == 0, 
+            open_image(path), 
+            background))),        
+        transform(Image.fromarray(np.where(
+            open_mask(path) == 255, 
+            open_image(path), 
+            background)))
+        ])
+
+def aggregate_image(label):
+    # if 1 in labels:
+    masks = label
+    
+    if label == 0:
+        # もし normal なら反転マスクを無視したいので -1
+        reverses = -1
+    else:
+        # もし anomaly なら反転マスクを考慮したいので 0
+        reverses = 0
+    return [masks, reverses]
+
+def aggregate_video(labels):
+    # maskしたばあい、または、通常の場合
+    masks = max(labels)
+    
+    if max(labels) == 0:
+        # もし anomaly の frame がなければ、無視したいので -1 にする
+        reverses = -1
+    else:
+        # もし anomaly の frame があれば、anomalyの逆で考慮したいので 0 にする
+        reverses = 0
+    return [masks, reverses]
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("pathlist", help="Path to the dataset", type=str)
     parser.add_argument("output_path", help="Path to the output file", type=str)
-    parser.add_argument("--video", action='store_true', help="Whether the dataset is video or image")
+    parser.add_argument("--video", action='store_true', help="Analyze Video")
     parser.add_argument("--gpu", action='store_true', help="Use GPU")
-    parser.add_argument("--resize", help="resize Image", type=float, default=1.0)
-    parser.add_argument("--F", help="trajectories frame", type=int, default=F)
-    parser.add_argument("--mask_background", action='store_true', help="Masking background")
     
     args = parser.parse_args()
     print(f"pathlist: {args.pathlist}")
     print(f"output_path: {args.output_path}")
     print(f"video: {args.video}")
     print(f"gpu: {args.gpu}")
-    print(f"resize: {args.resize}")
-    print(f"F: {args.F}")
-    print(f"mask_background: {args.mask_background}")
     
     # You can change the model here
     net = WrapperI3D() if args.video else WrapperResNet()
@@ -68,30 +121,31 @@ if __name__ == "__main__":
             "path": [path for _, path, _ in grp_path_and_label],
             "label": [int(label) for _, _, label in grp_path_and_label],
         })
-    
-    outputs, labels = [], []
-    for idx, df_grp in df.groupby('grp'):
-        print(f"{idx}:")
-        ds = DataSet(
-            df_grp["path"].tolist(),
-            df_grp["label"].tolist(),
-            resize=args.resize,
-            is_video=args.video,
-            F=args.F,
-            n_batches=N_BATCHES,
-            n_workers=N_WORKERS,
-            mask_background=args.mask_background)
-        o, l = extract(ds, net, cuda=args.gpu)
-        outputs.append(o)
-        labels.append(l)
-    
-    outputs = torch.cat(outputs)
-    labels = torch.cat(labels)
         
-    print(f"features_size: {outputs.size()}")
-    print(f"labels_size: {labels.size()}")
-    
-    torch.save({
-        "features": outputs,
-        "labels": labels
-    }, args.output_path)
+    outputs = []
+    for idx, df_grp in tqdm(df.groupby('grp')):          
+        background = np.median([
+            open_image(path)
+            for path in df_grp["path"].tolist()
+        ], axis=0).astype(np.uint8)
+        
+        
+        if args.video:
+            parser = lambda paths: img2tensor_forvideo(paths, background)
+        else:
+            parser = lambda paths: img2tensor(paths, background)
+        
+        extractor = Extractor(
+            df_grp["path"].tolist(), 
+            df_grp["label"].tolist(), 
+            net, parser,
+            F=16 if args.video else None,
+            aggregate=aggregate_video if args.video else aggregate_image,
+            cuda=args.gpu)
+        features = extractor.extract()
+                
+        outputs.append(features)
+        
+    print("faetures_size: ", outputs[0].features.size())
+    print("labels_size: ", outputs[0].labels.size())
+    torch.save(outputs, args.output_path)
