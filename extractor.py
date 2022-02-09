@@ -31,38 +31,43 @@ def open_mask(path: str, resize: float = 1.0) -> Image.Image:
     else:
         return np.zeros(open_image(path, resize).shape, dtype=np.uint8)
 
-def img2tensor_forvideo(paths, background, reverse_mask):
+def img2tensor_forvideo(paths, background):
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    # マスクを反転適用
-    filter_value = 0 if reverse_mask else 255
-    
     return torch.stack([
-        transform(Image.fromarray(np.where(
-            open_mask(path) == filter_value, 
-            open_image(path), 
-            background)))
+        torch.stack([
+            transform(Image.fromarray(np.where(
+                open_mask(path) == 0, 
+                open_image(path), 
+                background))),            
+            transform(Image.fromarray(np.where(
+                open_mask(path) == 255, 
+                open_image(path), 
+                background)))])
         for path in paths
     ])
 
-def img2tensor(path, background, reverse_mask):
+def img2tensor(path, background):
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    # マスクを反転適用
-    filter_value = 0 if reverse_mask else 255
-    
-    return transform(Image.fromarray(np.where(
-            open_mask(path) == filter_value, 
+    return torch.stack([
+        transform(Image.fromarray(np.where(
+            open_mask(path) == 0, 
+            open_image(path), 
+            background))),        
+        transform(Image.fromarray(np.where(
+            open_mask(path) == 255, 
             open_image(path), 
             background)))
+        ])
 
 
 if __name__ == "__main__":
@@ -103,31 +108,19 @@ if __name__ == "__main__":
         
         
         if args.video:
-            parser = lambda paths: img2tensor_forvideo(paths, background, reverse_mask=False)
-            parser_reverse = lambda paths: img2tensor_forvideo(paths, background, reverse_mask=True)
+            parser = lambda paths: img2tensor_forvideo(paths, background)
         else:
-            parser = lambda paths: img2tensor(paths, background, reverse_mask=False)
-            parser_reverse = lambda paths: img2tensor(paths, background, reverse_mask=True)
+            parser = lambda paths: img2tensor(paths, background)
         
-        extractor_mask = Extractor(
+        extractor = Extractor(
             df_grp["path"].tolist(), 
             df_grp["label"].tolist(), 
             net, parser,
             F=16 if args.video else None,
             aggregate=max if args.video else None,
             cuda=args.gpu)
-        features_mask = extractor_mask.extract()
-        
-        extractor_reverse = Extractor(
-            df_grp["path"].tolist(), 
-            df_grp["label"].tolist(), 
-            net, parser_reverse,
-            F=16 if args.video else None,
-            aggregate=max if args.video else None,
-            cuda=args.gpu)
-        features_reverse = extractor_reverse.extract()
-        
-        features = VideoFeature.concat(features_mask, features_reverse)        
+        features = extractor.extract()
+                
         outputs.append(features)
         
     print("faetures_size: ", outputs[0].features.size())
